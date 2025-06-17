@@ -25,10 +25,10 @@ import common.BallerinaModel.TypeDesc.UnionTypeDesc;
 import io.ballerina.compiler.syntax.tree.ModuleMemberDeclarationNode;
 import org.jetbrains.annotations.NotNull;
 import tibco.TibcoToBalConverter;
-import tibco.parser.XmlToTibcoModelParser;
 import tibco.analyzer.AnalysisResult;
 import tibco.model.Process;
 import tibco.model.Type;
+import tibco.parser.XmlToTibcoModelParser;
 
 import java.util.ArrayList;
 import java.util.Collection;
