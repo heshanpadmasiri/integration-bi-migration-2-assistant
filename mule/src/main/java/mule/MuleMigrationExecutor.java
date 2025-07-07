@@ -20,9 +20,12 @@ package mule;
 import common.BICodeConverter;
 import common.BallerinaModel;
 import common.CodeGenerator;
+import common.CombinedSummaryReport;
+import common.ProjectSummary;
 import io.ballerina.compiler.syntax.tree.SyntaxTree;
 import mule.dataweave.converter.DWConversionStats;
 import mule.reader.MuleXMLNavigator;
+import mule.report.MuleProjectSummaryHelper;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -60,13 +63,33 @@ public class MuleMigrationExecutor {
 
     public static void migrateMuleSource(String inputPathArg, String outputPathArg, boolean dryRun, boolean verbose,
                                          boolean keepStructure) {
+        migrateMuleSource(inputPathArg, outputPathArg, dryRun, verbose, keepStructure, false);
+    }
+
+    public static void migrateMuleSource(String inputPathArg, String outputPathArg, boolean dryRun, boolean verbose,
+                                         boolean keepStructure, boolean multiRoot) {
         logger = verbose ? createDefaultLogger("migrate-mule") : createSilentLogger("migrate-mule");
         logger().info("migrate-mule tool initialized with --dry-run =" + dryRun +
-                ", --verbose = " + verbose + ", --keep-structure = " + keepStructure);
+                ", --verbose = " + verbose + ", --keep-structure = " + keepStructure + ", --multi-root = " + multiRoot);
         Path sourcePath = Paths.get(inputPathArg);
         if (!Files.exists(sourcePath)) {
             logger().severe("Source path does not exist: '" + sourcePath + "'");
             System.exit(1);
+        }
+
+        if (multiRoot) {
+            if (!Files.isDirectory(sourcePath)) {
+                logger().severe("Error: Multi-root conversion requires a directory path, but a file was provided: "
+                        + inputPathArg);
+                System.exit(1);
+            }
+            if (!dryRun) {
+                logger().severe("Error: Multi-root conversion is only supported with dry run mode. "
+                        + "Please use the --dry-run flag.");
+                System.exit(1);
+            }
+            migrateMuleMultiRoot(sourcePath, outputPathArg, dryRun, verbose, keepStructure);
+            return;
         }
 
         if (Files.isDirectory(sourcePath)) {
@@ -88,6 +111,59 @@ public class MuleMigrationExecutor {
                                               boolean keepStructure) {
         logger = createSilentLogger("migrate-mule-test-suite");
         convertMuleProject(inputPathArg, outputPathArg, dryRun, verbose, keepStructure);
+    }
+
+    private static void migrateMuleMultiRoot(Path inputPath, String outputPath, boolean dryRun, boolean verbose,
+                                             boolean keepStructure) {
+        List<ProjectSummary> projectSummaries = new ArrayList<>();
+        
+        try {
+            Files.list(inputPath)
+                    .filter(Files::isDirectory)
+                    .forEach(childDir -> {
+                        String childName = childDir.getFileName().toString();
+                        String childOutputPath;
+                        if (outputPath != null) {
+                            childOutputPath = Paths.get(outputPath, childName + "_converted").toString();
+                        } else {
+                            childOutputPath = childDir + "_converted";
+                        }
+                        logger().info("Converting Mule project: " + childDir);
+                        
+                        // Check if this is a valid Mule project directory
+                        Path muleAppDir = childDir.resolve("src").resolve("main").resolve(MULE_DEFAULT_APP_DIR_NAME);
+                        if (!Files.exists(muleAppDir)) {
+                            logger().warning("Skipping directory (not a Mule project): " + childDir);
+                            return;
+                        }
+                        
+                        // Convert the project
+                        Context ctx = new Context();
+                        convertMuleProjectWithContext(childDir.toString(), childOutputPath, ctx, dryRun, verbose, keepStructure);
+                        
+                        // Create project summary
+                        String reportRelativePath = childName + "_converted/" + MIGRATION_ASSESSMENT_REPORT_NAME;
+                        ProjectSummary projectSummary = MuleProjectSummaryHelper.createProjectSummary(
+                                ctx.migrationMetrics, 
+                                childName, 
+                                childDir.toString(), 
+                                reportRelativePath
+                        );
+                        projectSummaries.add(projectSummary);
+                    });
+        } catch (IOException e) {
+            logger().severe("Error reading directory: " + inputPath);
+            System.exit(1);
+            return;
+        }
+
+        // Create combined summary report
+        Path summaryOutputPath = outputPath != null ? Paths.get(outputPath) : inputPath;
+        try {
+            writeCombinedSummaryReport(summaryOutputPath, projectSummaries);
+        } catch (IOException e) {
+            logger().severe("Error creating combined summary report: " + e.getMessage());
+        }
     }
 
     private static void validateOutputPathArg(String outputPathArg) {
@@ -130,6 +206,12 @@ public class MuleMigrationExecutor {
 
     private static void convertMuleProject(String inputPathArg, String outputPathArg, boolean dryRun, boolean verbose,
                                           boolean keepStructure) {
+        Context ctx = new Context();
+        convertMuleProjectWithContext(inputPathArg, outputPathArg, ctx, dryRun, verbose, keepStructure);
+    }
+
+    private static void convertMuleProjectWithContext(String inputPathArg, String outputPathArg, Context ctx, 
+                                                      boolean dryRun, boolean verbose, boolean keepStructure) {
         // Collect xml configs and property files
         logger().info("Collecting XML configs and property files in Mule project...");
         List<File> xmlFiles = new ArrayList<>();
@@ -146,17 +228,23 @@ public class MuleMigrationExecutor {
 
         String balPackageName = sourcePath.getFileName() + BAL_PROJECT_SUFFIX;
         Path targetDir = outputPathArg != null ? Paths.get(outputPathArg) : sourcePath;
-        convertToBalProject(xmlFiles, propertyFiles, muleAppDir, targetDir, balPackageName, dryRun, verbose,
+        convertToBalProjectWithContext(xmlFiles, propertyFiles, muleAppDir, targetDir, balPackageName, ctx, dryRun, verbose,
                 keepStructure);
     }
 
     private static void convertToBalProject(List<File> xmlFiles, List<File> propertyFiles, Path muleAppDir,
                                             Path targetDir, String balPackageName, boolean dryRun, boolean verbose,
                                             boolean keepStructure) {
+        Context ctx = new Context();
+        convertToBalProjectWithContext(xmlFiles, propertyFiles, muleAppDir, targetDir, balPackageName, ctx, dryRun, verbose, keepStructure);
+    }
+
+    private static void convertToBalProjectWithContext(List<File> xmlFiles, List<File> propertyFiles, Path muleAppDir,
+                                                       Path targetDir, String balPackageName, Context ctx, boolean dryRun, boolean verbose,
+                                                       boolean keepStructure) {
         logger().info("Converting Mule XML configs to ballerina intermediate representation...");
         // 1. Convert xml configs to ballerina-ir
         Path balPackageDir = targetDir.resolve(balPackageName);
-        Context ctx = new Context();
         MuleXMLNavigator muleXMLNavigator = new MuleXMLNavigator(ctx.migrationMetrics);
         List<TextDocument> birTxtDocs = new ArrayList<>(xmlFiles.size() + 1);
         for (File xmlFile : xmlFiles) {
@@ -383,6 +471,14 @@ public class MuleMigrationExecutor {
                 logger().severe("Error creating directories: " + path);
             }
         }
+    }
+
+    private static void writeCombinedSummaryReport(Path targetDir, List<ProjectSummary> projectSummaries) throws IOException {
+        Path reportFilePath = targetDir.resolve("combined_summary_report.html");
+        CombinedSummaryReport combinedReport = new CombinedSummaryReport("Combined Migration Assessment", projectSummaries);
+        String htmlContent = combinedReport.toHTML();
+        Files.writeString(reportFilePath, htmlContent);
+        logger().info("Created combined summary report at: " + reportFilePath);
     }
 
     public static Logger logger() {

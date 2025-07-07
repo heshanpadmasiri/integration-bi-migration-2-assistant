@@ -19,6 +19,7 @@
 package tibco.analyzer;
 
 import common.AnalysisReport;
+import common.ProjectSummary;
 import org.w3c.dom.Element;
 import tibco.analyzer.TibcoAnalysisReport.UnhandledActivityElement.NamedUnhandledActivityElement;
 import tibco.converter.ConversionUtils;
@@ -118,5 +119,46 @@ public record TibcoAnalysisReport(int totalActivityCount, int unhandledActivityC
         );
 
         return report.toHTML();
+    }
+
+    /**
+     * Creates a ProjectSummary from this TibcoAnalysisReport.
+     *
+     * @param projectName   The name of the project
+     * @param projectPath   The path to the project
+     * @param reportPath    The path to the individual report file
+     * @return A ProjectSummary instance
+     */
+    public ProjectSummary toProjectSummary(String projectName, String projectPath, String reportPath) {
+        double conversionPercentage = 100.0 - (totalActivityCount > 0 ? 
+                (double) unhandledActivityCount / totalActivityCount * 100.0 : 0.0);
+        
+        // Calculate time estimation based on unique unhandled activity types
+        Map<String, Collection<AnalysisReport.UnhandledElement>> unhandledElementsMap = createUnhandledElementsMap();
+        int uniqueUnhandledTypes = unhandledElementsMap.size();
+        
+        // Time estimation constants (similar to AnalysisReport)
+        int bestCaseDays = uniqueUnhandledTypes * 1;
+        int averageCaseDays = uniqueUnhandledTypes * 2;
+        int worstCaseDays = uniqueUnhandledTypes * 3;
+        
+        int bestCaseWeeks = (int) Math.ceil(bestCaseDays / 5.0);
+        int averageCaseWeeks = (int) Math.ceil(averageCaseDays / 5.0);
+        int worstCaseWeeks = (int) Math.ceil(worstCaseDays / 5.0);
+        
+        ProjectSummary.TimeEstimation timeEstimation = new ProjectSummary.TimeEstimation(
+                bestCaseDays, averageCaseDays, worstCaseDays,
+                bestCaseWeeks, averageCaseWeeks, worstCaseWeeks
+        );
+        
+        return new ProjectSummary(
+                projectName,
+                projectPath,
+                reportPath,
+                totalActivityCount,
+                unhandledActivityCount,
+                conversionPercentage,
+                timeEstimation
+        );
     }
 }
